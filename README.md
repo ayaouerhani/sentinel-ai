@@ -2,7 +2,7 @@
 
 Mini SOC (Security Operations Center) qui surveille le trafic réseau, détecte les activités suspectes avec du **Machine Learning** et des **règles de corrélation**, classe la gravité des alertes et les affiche dans un **dashboard** temps réel.
 
-> Projet réalisé dans le cadre d'un PFE en cybersécurité. Auteur : *(ton nom)*
+> Projet réalisé dans le cadre d'un PFE en cybersécurité. Auteur : *Aya Ouerhani*
 
 ## Architecture
 
