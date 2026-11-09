@@ -24,13 +24,13 @@ def handle(pkt):
     ip = pkt[IP]
     if TCP in pkt:
         proto, sport, dport = "TCP", pkt[TCP].sport, pkt[TCP].dport
-        plen = len(pkt[TCP].payload)
+        plen = max(0, ip.len - ip.ihl * 4 - pkt[TCP].dataofs * 4)
     elif UDP in pkt:
         proto, sport, dport = "UDP", pkt[UDP].sport, pkt[UDP].dport
-        plen = len(pkt[UDP].payload)
+        plen = max(0, pkt[UDP].len - 8)
     elif ICMP in pkt:
         proto, sport, dport = "ICMP", 0, 0
-        plen = len(pkt[ICMP].payload)
+        plen = max(0, ip.len - ip.ihl * 4 - 8)
     else:
         return
 
@@ -61,7 +61,6 @@ def handle(pkt):
         f["syn"] += bool(flags & 0x02)
         f["fin"] += bool(flags & 0x01)
         f["rst"] += bool(flags & 0x04)
-
 
 print(f"Capture pendant {DURATION}s... (ouvre un site web, fais un ping, etc.)")
 sniff(iface=IFACE, prn=handle, store=False, timeout=DURATION)
