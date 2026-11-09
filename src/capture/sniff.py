@@ -24,10 +24,13 @@ def handle(pkt):
     ip = pkt[IP]
     if TCP in pkt:
         proto, sport, dport = "TCP", pkt[TCP].sport, pkt[TCP].dport
+        plen = len(pkt[TCP].payload)
     elif UDP in pkt:
         proto, sport, dport = "UDP", pkt[UDP].sport, pkt[UDP].dport
+        plen = len(pkt[UDP].payload)
     elif ICMP in pkt:
         proto, sport, dport = "ICMP", 0, 0
+        plen = len(pkt[ICMP].payload)
     else:
         return
 
@@ -48,10 +51,10 @@ def handle(pkt):
 
     if ip.src == f["src"] and sport == f["sport"]:
         f["fwd_pkts"] += 1
-        f["fwd_bytes"] += len(pkt)
+        f["fwd_bytes"] += plen
     else:
         f["bwd_pkts"] += 1
-        f["bwd_bytes"] += len(pkt)
+        f["bwd_bytes"] += plen
 
     if TCP in pkt:
         flags = int(pkt[TCP].flags)
