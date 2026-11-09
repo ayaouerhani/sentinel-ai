@@ -1,3 +1,4 @@
+import locale
 import sqlite3
 import subprocess
 import sys
@@ -9,6 +10,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = ROOT / "data" / "sentinel.db"
+LOG_PATH = ROOT / "data" / "monitor.log"
 SEVERITIES = ["Critical", "High", "Medium", "Low"]
 SEV_COLORS = ["#d62728", "#ff7f0e", "#f2c200", "#2ca02c"]
 
@@ -52,73 +54,89 @@ def severity_chart(df):
     st.altair_chart(chart, width="stretch")
 
 
+@st.cache_resource
+def monitor_state():
+    # dictionnaire partagé: garde le process du monitoring entre les reruns
+    return {"proc": None}
+
+
 # ======================= TAB 1: LIVE =======================
 def render_live():
-    st.subheader("Capture et détection en direct")
-    c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
-    iface_ip = c1.text_input("IP de l'interface à surveiller", "192.168.1.146")
-    duration = c2.slider("Durée de capture (s)", 10, 120, 30)
-    run = c3.button("▶️ Lancer capture + détection")
-    clear = c4.button("🗑️ Vider les alertes live")
+    st.subheader("Monitoring continu (capture → détection → alertes)")
+    state = monitor_state()
+    proc = state["proc"]
+    running = proc is not None and proc.poll() is None
 
-    if clear and DB_PATH.exists():
+    c1, c2, c3, c4 = st.columns(4)
+    iface_ip = c1.text_input("IP de l'interface", "192.168.200.1", disabled=running)
+    window = c2.slider("Fenêtre d'analyse (s)", 10, 60, 20, disabled=running)
+
+    if running:
+        if c3.button("⏹️ Arrêter le monitoring"):
+            proc.terminate()
+            state["proc"] = None
+            st.rerun()
+    else:
+        if c3.button("▶️ Démarrer le monitoring"):
+            log = open(LOG_PATH, "w", encoding="utf-8")
+            state["proc"] = subprocess.Popen(
+                [sys.executable, str(ROOT / "src" / "monitor.py"), iface_ip, str(window)],
+                cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+            )
+            st.rerun()
+
+    if c4.button("🗑️ Vider les alertes live") and DB_PATH.exists():
         run_sql("DROP TABLE IF EXISTS live_alerts")
-        st.success("Alertes live supprimées")
+        st.rerun()
 
-    if run:
-        with st.spinner(f"Capture en cours ({duration}s)... génère du trafic !"):
-            cap = subprocess.run(
-                [sys.executable, str(ROOT / "src" / "capture" / "sniff.py"),
-                 str(duration), iface_ip],
-                cwd=ROOT, capture_output=True, text=True,
-            )
-        if cap.returncode != 0:
-            st.error("La capture a échoué (Npcap, IP de l'interface, droits admin ?)")
-            st.code((cap.stdout + cap.stderr)[-1500:])
-        else:
-            det = subprocess.run(
-                [sys.executable, str(ROOT / "src" / "model" / "detect_live.py")],
-                cwd=ROOT, capture_output=True, text=True,
-            )
-            if det.returncode == 0:
-                st.success("Analyse terminée")
-                st.code(det.stdout[-1500:])
-            else:
-                st.error("Erreur pendant la détection")
-                st.code(det.stderr[-1500:])
+    if running:
+        st.success("🟢 Monitoring actif : fenêtres de capture en boucle")
+    else:
+        st.info("⚫ Monitoring arrêté")
 
-    df = read_table("live_alerts")
-    if df is None or df.empty:
-        st.info("Aucune alerte live. Lance une capture (ou un scan nmap sur ta VM de test).")
-        return
+    @st.fragment(run_every="5s" if running else None)
+    def live_view():
+        if LOG_PATH.exists():
+            lines = LOG_PATH.read_text(                                  # <-- fix accents
+                encoding=locale.getpreferredencoding(False), errors="replace"
+            ).splitlines()[-6:]
+            with st.expander("Journal du monitoring", expanded=running):
+                st.code("\n".join(lines) or "(vide)")
 
-    sev_filter = st.multiselect("Severity", SEVERITIES, default=SEVERITIES, key="live_sev")
-    fdf = df[df["severity"].isin(sev_filter)]
+        df = read_table("live_alerts")
+        if df is None or df.empty:
+            st.info("Aucune alerte live pour l'instant.")
+            return
 
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total alerts", len(fdf))
-    k2.metric("🔴 Critical", int((fdf["severity"] == "Critical").sum()))
-    k3.metric("🟠 High", int((fdf["severity"] == "High").sum()))
-    k4.metric("IPs sources distinctes", fdf["src"].nunique())
+        sev_filter = st.multiselect("Severity", SEVERITIES, default=SEVERITIES, key="live_sev")
+        fdf = df[df["severity"].isin(sev_filter)]
 
-    st.divider()
-    left, mid, right = st.columns(3)
-    with left:
-        st.markdown("**Par severity**")
-        severity_chart(fdf)
-    with mid:
-        st.markdown("**Par type d'attaque**")
-        st.bar_chart(fdf["attack_type"].value_counts())
-    with right:
-        st.markdown("**Top IPs sources**")
-        st.bar_chart(fdf["src"].value_counts().head(10))
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Total alerts", len(fdf))
+        k2.metric("🔴 Critical", int((fdf["severity"] == "Critical").sum()))
+        k3.metric("🟠 High", int((fdf["severity"] == "High").sum()))
+        k4.metric("IPs sources distinctes", fdf["src"].nunique())
 
-    st.markdown("**Dernières alertes**")
-    cols = ["timestamp", "severity", "attack_type", "src", "dst", "detected_by", "detail"]
-    st.dataframe(
-        fdf.sort_values(["timestamp", "id"], ascending=False)[cols].head(100),
-        width="stretch", hide_index=True,
-    )
+        st.divider()
+        left, mid, right = st.columns(3)
+        with left:
+            st.markdown("**Par severity**")
+            severity_chart(fdf)
+        with mid:
+            st.markdown("**Par type d'attaque**")
+            st.bar_chart(fdf["attack_type"].value_counts())
+        with right:
+            st.markdown("**Top IPs sources**")
+            st.bar_chart(fdf["src"].value_counts().head(10))
+
+        st.markdown("**Dernières alertes**")
+        cols = ["timestamp", "severity", "attack_type", "src", "dst", "detected_by", "detail"]
+        st.dataframe(
+            fdf.sort_values(["timestamp", "id"], ascending=False)[cols].head(100),
+            width="stretch", hide_index=True,
+        )
+
+    live_view()
 
 
 # ======================= TAB 2: SIMULATION =======================
@@ -184,7 +202,7 @@ def render_simulation():
     )
 
 
-tab_live, tab_sim = st.tabs(["🔴 Live Alerts", "🧪 Simulation (NSL-KDD)"])
+tab_live, tab_sim = st.tabs(["🔴 Live Monitoring", "🧪 Simulation (NSL-KDD)"])
 with tab_live:
     render_live()
 with tab_sim:
